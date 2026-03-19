@@ -1,0 +1,8 @@
+{
+  "name": "Águia Florestal - Sistema de Manutenção",
+  "description": "Sistema interno para gestão de manutenções preventivas, corretivas e consulta de manuais para a Águia Florestal.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ]
+}
