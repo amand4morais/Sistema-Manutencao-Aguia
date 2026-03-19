@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { ChevronLeft, Save, Printer, Clock, Plus, Trash2, CheckCircle2 } from 'lucide-react';
+import { ChevronLeft, Save, Printer, Plus, Trash2, CheckCircle2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
-import { MaintenanceOrder, Equipment, Profile } from '../types';
+import { MaintenanceOrder, Equipment } from '../types';
 import { useAuth } from '../hooks/useAuth';
 import { useOfflineSync } from '../hooks/useOfflineSync';
 import { notifyAdmins } from '../utils/notificationUtils';
@@ -15,11 +15,11 @@ export default function MaintenanceOrderForm() {
   const location = useLocation();
   const { profile } = useAuth();
   const { addAction } = useOfflineSync();
-  
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [equipments, setEquipments] = useState<Equipment[]>([]);
-  
+
   const [formData, setFormData] = useState<Partial<MaintenanceOrder>>({
     number: '',
     requester_name: '',
@@ -49,24 +49,47 @@ export default function MaintenanceOrderForm() {
   async function fetchInitialData() {
     try {
       setLoading(true);
-      
-      // Fetch equipments
-      const { data: eqData } = await supabase.from('equipments').select('*').order('name');
+
+      // Buscar equipamentos
+      const { data: eqData, error: eqError } = await supabase
+        .from('equipments')
+        .select('*')
+        .order('name');
+
+      if (eqError) {
+        console.error('Erro ao carregar equipamentos:', eqError);
+      }
       setEquipments(eqData || []);
 
-      if (id && id !== 'new') {
-        const { data: orderData, error } = await supabase
+      const isEditing = id && id !== 'new';
+
+      if (isEditing) {
+        // Carregar OS existente — sem join para evitar falha de FK
+        const { data: orderData, error: orderError } = await supabase
           .from('maintenance_orders')
           .select('*')
           .eq('id', id)
           .single();
 
-        if (error) throw error;
+        if (orderError) {
+          if (orderError.code === 'PGRST116') {
+            toast.error('Ordem de Serviço não encontrada.');
+            navigate('/maintenance-orders');
+            return;
+          }
+          throw orderError;
+        }
+
         if (orderData) {
-          setFormData(orderData);
+          // time_entries pode vir como string JSON dependendo do tipo da coluna
+          const timeEntries = typeof orderData.time_entries === 'string'
+            ? JSON.parse(orderData.time_entries)
+            : (orderData.time_entries || []);
+
+          setFormData({ ...orderData, time_entries: timeEntries });
         }
       } else {
-        // Handle query parameters for pre-filling
+        // Nova OS — pré-preencher a partir dos query params
         const params = new URLSearchParams(location.search);
         const equipmentId = params.get('equipment_id');
         const correctiveId = params.get('corrective_id');
@@ -81,12 +104,13 @@ export default function MaintenanceOrderForm() {
           corrective_id: correctiveId || null,
           problem_description: problem || '',
           observations: observations || '',
-          service_by: profile?.full_name || ''
+          service_by: profile?.full_name || '',
+          technician_id: profile?.id || ''
         }));
       }
     } catch (error: any) {
-      console.error('Erro ao carregar dados:', error);
-      toast.error('Erro ao carregar dados da OS');
+      console.error('Erro ao carregar dados da OS:', error);
+      toast.error('Erro ao carregar dados: ' + (error.message || 'Erro desconhecido'));
     } finally {
       setLoading(false);
     }
@@ -117,8 +141,13 @@ export default function MaintenanceOrderForm() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSaving(true);
 
+    if (!formData.equipment_id) {
+      toast.error('Selecione um equipamento');
+      return;
+    }
+
+    setSaving(true);
     try {
       const payload = {
         ...formData,
@@ -126,94 +155,98 @@ export default function MaintenanceOrderForm() {
         updated_at: new Date().toISOString()
       };
 
-      if (id && id !== 'new') {
+      const isEditing = id && id !== 'new';
+
+      if (isEditing) {
         await addAction('maintenance_orders', 'UPDATE', { ...payload, id });
         toast.success('Ordem de Serviço atualizada!');
       } else {
         await addAction('maintenance_orders', 'INSERT', payload);
-        
-        // Notificar admins sobre nova OS
+
         const equipment = equipments.find(eq => eq.id === formData.equipment_id);
         await notifyAdmins(
           'Nova Ordem de Serviço',
-          `OS #${formData.number} criada para o equipamento ${equipment?.name}.`,
+          `OS #${formData.number} criada para o equipamento ${equipment?.name || 'desconhecido'}.`,
           'info',
           '/maintenance-orders'
         );
-        
+
         toast.success('Ordem de Serviço criada!');
       }
-      
+
       navigate('/maintenance-orders');
     } catch (error: any) {
       console.error('Erro ao salvar OS:', error);
-      toast.error('Erro ao salvar Ordem de Serviço');
+      toast.error('Erro ao salvar Ordem de Serviço: ' + (error.message || 'Erro desconhecido'));
     } finally {
       setSaving(false);
     }
   };
 
-  const handlePrint = () => {
-    window.print();
-  };
-
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-screen">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-700"></div>
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-700" />
       </div>
     );
   }
 
   return (
     <div className="p-4 md:p-8 max-w-5xl mx-auto print:p-0">
+      {/* Top bar */}
       <div className="flex items-center justify-between mb-8 print:hidden">
-        <button 
+        <button
           onClick={() => navigate('/maintenance-orders')}
           className="text-stone-500 hover:text-stone-800 flex items-center gap-2 transition-colors"
         >
           <ChevronLeft size={20} />
           <span>Voltar</span>
         </button>
-        
+
         <div className="flex gap-3">
-          <button 
-            onClick={handlePrint}
+          <button
+            type="button"
+            onClick={() => window.print()}
             className="px-4 py-2 border border-stone-200 rounded-xl font-medium text-stone-600 hover:bg-stone-50 flex items-center gap-2 transition-colors"
           >
             <Printer size={18} />
             <span>Imprimir</span>
           </button>
-          <button 
+          <button
             onClick={handleSubmit}
             disabled={saving}
             className="bg-emerald-700 text-white px-6 py-2 rounded-xl font-medium flex items-center gap-2 hover:bg-emerald-800 transition-colors shadow-sm disabled:opacity-50"
           >
-            {saving ? <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div> : <Save size={18} />}
+            {saving
+              ? <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
+              : <Save size={18} />
+            }
             <span>Salvar OS</span>
           </button>
         </div>
       </div>
 
-      {/* OS Form - Mimicking the paper version */}
+      {/* Formulário */}
       <div className="bg-white border border-stone-300 shadow-sm overflow-hidden print:border-none print:shadow-none">
         {/* Header */}
         <div className="p-6 border-b border-stone-300 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-stone-50/50">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 bg-emerald-800 rounded flex items-center justify-center text-white font-bold text-xs text-center leading-tight">
-              Águia<br/>Florestal
+              Águia<br />Florestal
             </div>
             <div>
-              <h1 className="text-xl font-bold text-stone-900 uppercase tracking-tight">Ordem de Serviço de Manutenção</h1>
+              <h1 className="text-xl font-bold text-stone-900 uppercase tracking-tight">
+                Ordem de Serviço de Manutenção
+              </h1>
               <div className="flex gap-4 mt-1">
-                {['Matriz', 'Itaiacoca', 'Distrito'].map(loc => (
+                {(['Matriz', 'Itaiacoca', 'Distrito'] as const).map(loc => (
                   <label key={loc} className="flex items-center gap-2 text-xs font-medium text-stone-600 cursor-pointer">
-                    <input 
-                      type="radio" 
-                      name="establishment" 
+                    <input
+                      type="radio"
+                      name="establishment"
                       value={loc}
                       checked={formData.establishment === loc}
-                      onChange={e => setFormData({...formData, establishment: e.target.value as any})}
+                      onChange={e => setFormData({ ...formData, establishment: e.target.value as any })}
                       className="text-emerald-600 focus:ring-emerald-500"
                     />
                     {loc}
@@ -229,14 +262,14 @@ export default function MaintenanceOrderForm() {
         </div>
 
         <form onSubmit={handleSubmit} className="p-0">
-          {/* Section 1: Requester & Cost Center */}
+          {/* Solicitante */}
           <div className="grid grid-cols-1 md:grid-cols-3 border-b border-stone-300">
             <div className="p-4 md:col-span-2 border-r border-stone-300">
               <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">Solicitante</label>
-              <input 
+              <input
                 type="text"
                 value={formData.requester_name}
-                onChange={e => setFormData({...formData, requester_name: e.target.value})}
+                onChange={e => setFormData({ ...formData, requester_name: e.target.value })}
                 placeholder="Nome do solicitante"
                 className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium placeholder:text-stone-300"
               />
@@ -247,43 +280,45 @@ export default function MaintenanceOrderForm() {
             </div>
           </div>
 
-          {/* Section 2: Cost Center */}
+          {/* Centro de Custo */}
           <div className="grid grid-cols-1 md:grid-cols-3 border-b border-stone-300">
             <div className="p-4 border-r border-stone-300">
               <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">Centro Custo (Código)</label>
-              <input 
+              <input
                 type="text"
                 value={formData.cost_center_code}
-                onChange={e => setFormData({...formData, cost_center_code: e.target.value})}
+                onChange={e => setFormData({ ...formData, cost_center_code: e.target.value })}
                 placeholder="Código"
                 className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium placeholder:text-stone-300"
               />
             </div>
             <div className="p-4 md:col-span-2">
               <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">Nome do Centro de Custo</label>
-              <input 
+              <input
                 type="text"
                 value={formData.cost_center_name}
-                onChange={e => setFormData({...formData, cost_center_name: e.target.value})}
+                onChange={e => setFormData({ ...formData, cost_center_name: e.target.value })}
                 placeholder="Nome do centro de custo"
                 className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium placeholder:text-stone-300"
               />
             </div>
           </div>
 
-          {/* Section 3: Asset/Equipment */}
+          {/* Equipamento */}
           <div className="grid grid-cols-1 md:grid-cols-4 border-b border-stone-300">
             <div className="p-4 md:col-span-2 border-r border-stone-300">
-              <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">Bem (Equipamento)</label>
-              <select 
+              <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">Bem (Equipamento) *</label>
+              <select
                 required
                 value={formData.equipment_id}
-                onChange={e => setFormData({...formData, equipment_id: e.target.value})}
+                onChange={e => setFormData({ ...formData, equipment_id: e.target.value })}
                 className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium appearance-none"
               >
                 <option value="">Selecione um equipamento</option>
                 {equipments.map(eq => (
-                  <option key={eq.id} value={eq.id}>{eq.name} ({eq.serial_number})</option>
+                  <option key={eq.id} value={eq.id}>
+                    {eq.name}{eq.serial_number ? ` (${eq.serial_number})` : ''}
+                  </option>
                 ))}
               </select>
             </div>
@@ -295,73 +330,75 @@ export default function MaintenanceOrderForm() {
             </div>
             <div className="p-4">
               <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">Vinc. ao Bem nº</label>
-              <input 
+              <input
                 type="text"
                 value={formData.linked_asset_number || ''}
-                onChange={e => setFormData({...formData, linked_asset_number: e.target.value})}
+                onChange={e => setFormData({ ...formData, linked_asset_number: e.target.value })}
                 placeholder="Vínculo"
                 className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium placeholder:text-stone-300"
               />
             </div>
           </div>
 
-          {/* Section 4: Problem & Cause */}
+          {/* Problema */}
           <div className="p-4 border-b border-stone-300">
             <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">Problema</label>
-            <textarea 
+            <textarea
               rows={2}
               value={formData.problem_description}
-              onChange={e => setFormData({...formData, problem_description: e.target.value})}
+              onChange={e => setFormData({ ...formData, problem_description: e.target.value })}
               placeholder="Descreva o problema identificado"
               className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium placeholder:text-stone-300 resize-none"
             />
           </div>
+
+          {/* Causa */}
           <div className="p-4 border-b border-stone-300">
             <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">Causa</label>
-            <textarea 
+            <textarea
               rows={2}
               value={formData.cause_description}
-              onChange={e => setFormData({...formData, cause_description: e.target.value})}
+              onChange={e => setFormData({ ...formData, cause_description: e.target.value })}
               placeholder="Causa provável do problema"
               className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium placeholder:text-stone-300 resize-none"
             />
           </div>
 
-          {/* Section 5: Stop Time & Attendant */}
+          {/* Data de parada + Atendente */}
           <div className="grid grid-cols-1 md:grid-cols-2 border-b border-stone-300">
             <div className="p-4 border-r border-stone-300 flex items-center gap-4">
               <div className="flex-1">
                 <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">Parada do equipamento</label>
-                <input 
+                <input
                   type="date"
                   value={formData.stop_date || ''}
-                  onChange={e => setFormData({...formData, stop_date: e.target.value})}
+                  onChange={e => setFormData({ ...formData, stop_date: e.target.value })}
                   className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium"
                 />
               </div>
               <div className="w-24">
                 <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">Hora</label>
-                <input 
+                <input
                   type="time"
                   value={formData.stop_hour || ''}
-                  onChange={e => setFormData({...formData, stop_hour: e.target.value})}
+                  onChange={e => setFormData({ ...formData, stop_hour: e.target.value })}
                   className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium"
                 />
               </div>
             </div>
             <div className="p-4">
               <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">Atendimento por</label>
-              <input 
+              <input
                 type="text"
                 value={formData.service_by}
-                onChange={e => setFormData({...formData, service_by: e.target.value})}
+                onChange={e => setFormData({ ...formData, service_by: e.target.value })}
                 placeholder="Nome do técnico/atendente"
                 className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium placeholder:text-stone-300"
               />
             </div>
           </div>
 
-          {/* Section 6: Time Table */}
+          {/* Tabela de horas */}
           <div className="border-b border-stone-300 overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-stone-50 border-b border-stone-300">
@@ -370,14 +407,14 @@ export default function MaintenanceOrderForm() {
                   <th className="p-2 text-center text-[10px] font-bold text-emerald-800 uppercase border-r border-stone-300">Manhã</th>
                   <th className="p-2 text-center text-[10px] font-bold text-emerald-800 uppercase border-r border-stone-300">Tarde</th>
                   <th className="p-2 text-center text-[10px] font-bold text-emerald-800 uppercase border-r border-stone-300">Noite</th>
-                  <th className="p-2 text-center text-[10px] font-bold text-emerald-800 uppercase w-10 print:hidden"></th>
+                  <th className="p-2 w-10 print:hidden" />
                 </tr>
               </thead>
               <tbody>
                 {(formData.time_entries || []).map((entry, idx) => (
                   <tr key={idx} className="border-b border-stone-200 last:border-0">
                     <td className="p-0 border-r border-stone-300">
-                      <input 
+                      <input
                         type="date"
                         value={entry.date}
                         onChange={e => handleTimeEntryChange(idx, 'date', e.target.value)}
@@ -385,7 +422,7 @@ export default function MaintenanceOrderForm() {
                       />
                     </td>
                     <td className="p-0 border-r border-stone-300">
-                      <input 
+                      <input
                         type="text"
                         value={entry.morning}
                         onChange={e => handleTimeEntryChange(idx, 'morning', e.target.value)}
@@ -393,7 +430,7 @@ export default function MaintenanceOrderForm() {
                       />
                     </td>
                     <td className="p-0 border-r border-stone-300">
-                      <input 
+                      <input
                         type="text"
                         value={entry.afternoon}
                         onChange={e => handleTimeEntryChange(idx, 'afternoon', e.target.value)}
@@ -401,7 +438,7 @@ export default function MaintenanceOrderForm() {
                       />
                     </td>
                     <td className="p-0 border-r border-stone-300">
-                      <input 
+                      <input
                         type="text"
                         value={entry.night}
                         onChange={e => handleTimeEntryChange(idx, 'night', e.target.value)}
@@ -409,7 +446,7 @@ export default function MaintenanceOrderForm() {
                       />
                     </td>
                     <td className="p-2 text-center print:hidden">
-                      <button 
+                      <button
                         type="button"
                         onClick={() => handleRemoveTimeEntry(idx)}
                         className="text-stone-300 hover:text-red-500 transition-colors"
@@ -422,7 +459,7 @@ export default function MaintenanceOrderForm() {
               </tbody>
             </table>
             <div className="p-2 bg-stone-50/50 flex justify-center print:hidden">
-              <button 
+              <button
                 type="button"
                 onClick={handleAddTimeEntry}
                 className="text-xs font-bold text-emerald-700 flex items-center gap-1 hover:text-emerald-800"
@@ -433,57 +470,59 @@ export default function MaintenanceOrderForm() {
             </div>
           </div>
 
-          {/* Section 7: Services Performed */}
+          {/* Serviços executados */}
           <div className="p-4 border-b border-stone-300">
             <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">Serviços Executados</label>
-            <textarea 
+            <textarea
               rows={8}
               value={formData.services_performed}
-              onChange={e => setFormData({...formData, services_performed: e.target.value})}
+              onChange={e => setFormData({ ...formData, services_performed: e.target.value })}
               placeholder="Descreva detalhadamente todos os serviços realizados"
               className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium placeholder:text-stone-300 resize-none leading-relaxed"
             />
           </div>
 
-          {/* Section 8: Observations */}
+          {/* Observações */}
           <div className="p-4 border-b border-stone-300">
             <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">Observações</label>
-            <textarea 
+            <textarea
               rows={3}
               value={formData.observations}
-              onChange={e => setFormData({...formData, observations: e.target.value})}
+              onChange={e => setFormData({ ...formData, observations: e.target.value })}
               placeholder="Observações adicionais"
               className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium placeholder:text-stone-300 resize-none"
             />
           </div>
 
-          {/* Footer: Signature */}
+          {/* Assinatura */}
           <div className="p-8 flex flex-col items-center justify-center">
-            <div className="w-64 border-t border-stone-400 mt-8 mb-2"></div>
+            <div className="w-64 border-t border-stone-400 mt-8 mb-2" />
             <div className="text-[10px] font-bold text-stone-500 uppercase">Técnico Manutenção</div>
           </div>
         </form>
       </div>
 
-      <div className="mt-8 flex justify-between items-center print:hidden">
-        <div className="flex items-center gap-4">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input 
-              type="checkbox"
-              checked={formData.status === 'closed'}
-              onChange={e => setFormData({...formData, status: e.target.checked ? 'closed' : 'open'})}
-              className="rounded text-emerald-600 focus:ring-emerald-500"
-            />
-            <span className="text-sm font-medium text-stone-700">Finalizar Ordem de Serviço</span>
-          </label>
-        </div>
-        
-        <button 
+      {/* Footer */}
+      <div className="mt-8 flex flex-col md:flex-row justify-between items-center gap-4 print:hidden">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={formData.status === 'closed'}
+            onChange={e => setFormData({ ...formData, status: e.target.checked ? 'closed' : 'open' })}
+            className="rounded text-emerald-600 focus:ring-emerald-500"
+          />
+          <span className="text-sm font-medium text-stone-700">Finalizar Ordem de Serviço</span>
+        </label>
+
+        <button
           onClick={handleSubmit}
           disabled={saving}
           className="bg-emerald-700 text-white px-8 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-emerald-800 transition-colors shadow-lg disabled:opacity-50"
         >
-          {saving ? <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div> : <CheckCircle2 size={20} />}
+          {saving
+            ? <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white" />
+            : <CheckCircle2 size={20} />
+          }
           <span>{id && id !== 'new' ? 'Salvar Alterações' : 'Criar Ordem de Serviço'}</span>
         </button>
       </div>

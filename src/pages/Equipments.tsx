@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, Plus, FileText, ChevronRight, Settings, Trash2, X, Upload, Loader2, ClipboardCheck, Clock } from 'lucide-react';
+import { Search, Plus, FileText, Pencil, Settings, Trash2, X, Upload, Loader2, ClipboardCheck, Clock } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { Equipment } from '../types';
 import { useAuth } from '../hooks/useAuth';
@@ -8,36 +8,20 @@ import ChecklistManager from '../components/ChecklistManager';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
 
-import { seedInitialEquipments } from '../utils/seedData';
-
 import { getMaintenanceSchedule } from '../utils/maintenanceUtils';
 
 export default function Equipments() {
   const [equipments, setEquipments] = useState<Equipment[]>([]);
   const [schedule, setSchedule] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isSeeding, setIsSeeding] = useState(false);
-
-  const handleSeed = async () => {
-    setIsSeeding(true);
-    try {
-      await seedInitialEquipments();
-      toast.success('Equipamentos base cadastrados!');
-      fetchEquipments();
-    } catch (error) {
-      toast.error('Erro ao cadastrar equipamentos base');
-    } finally {
-      setIsSeeding(false);
-    }
-  };
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingEquipment, setEditingEquipment] = useState<Equipment | null>(null);
   const [uploading, setUploading] = useState(false);
   const [checklistEquipmentId, setChecklistEquipmentId] = useState<string | null>(null);
-  
+
   const { profile } = useAuth();
-  const { addAction, isOnline } = useOfflineSync();
+  const { addAction } = useOfflineSync();
 
   const [formData, setFormData] = useState({
     name: '',
@@ -109,7 +93,7 @@ export default function Equipments() {
     setUploading(true);
     try {
       const fileExt = file.name.split('.').pop();
-      const fileName = `${Math.random()}.${fileExt}`;
+      const fileName = `${Date.now()}-${Math.random().toString(36).substring(2)}.${fileExt}`;
       const filePath = `manuals/${fileName}`;
 
       const { error: uploadError } = await supabase.storage
@@ -133,19 +117,21 @@ export default function Equipments() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     const payload = {
       ...formData,
-      version: editingEquipment ? editingEquipment.version : 1
+      version: editingEquipment ? (editingEquipment.version ?? 1) : 1
     };
 
     try {
       if (editingEquipment) {
         await addAction('equipments', 'UPDATE', { ...payload, id: editingEquipment.id });
+        toast.success('Equipamento atualizado!');
       } else {
         await addAction('equipments', 'INSERT', payload);
+        toast.success('Equipamento cadastrado!');
       }
-      
+
       setIsModalOpen(false);
       fetchEquipments();
     } catch (error: any) {
@@ -153,18 +139,19 @@ export default function Equipments() {
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Tem certeza que deseja excluir este equipamento?')) return;
-    
+  const handleDelete = async (id: string, name: string) => {
+    if (!confirm(`Tem certeza que deseja excluir o equipamento "${name}"?`)) return;
+
     try {
       await addAction('equipments', 'DELETE', { id });
+      toast.success('Equipamento excluído!');
       fetchEquipments();
     } catch (error: any) {
       toast.error(error.message);
     }
   };
 
-  const filteredEquipments = equipments.filter(e => 
+  const filteredEquipments = equipments.filter(e =>
     e.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     e.serial_number?.toLowerCase().includes(searchTerm.toLowerCase())
   );
@@ -173,31 +160,19 @@ export default function Equipments() {
     <div className="p-4 md:p-8 max-w-6xl mx-auto">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-stone-900">Consulta de Equipamentos</h1>
-          <p className="text-stone-500">Visualize manuais e informações técnicas</p>
+          <h1 className="text-2xl font-bold text-stone-900">Equipamentos</h1>
+          <p className="text-stone-500">Visualize e gerencie os equipamentos da frota</p>
         </div>
-        
-        <div className="flex gap-3">
-          {profile?.role === 'admin' && (
-            <>
-              <button 
-                onClick={handleSeed}
-                disabled={isSeeding}
-                className="bg-stone-100 text-stone-600 px-6 py-2.5 rounded-xl font-medium flex items-center gap-2 hover:bg-stone-200 transition-colors disabled:opacity-50"
-              >
-                <Settings size={20} />
-                <span>{isSeeding ? 'Cadastrando...' : 'Cadastrar Modelos Base'}</span>
-              </button>
-              <button 
-                onClick={() => handleOpenModal()}
-                className="bg-emerald-700 text-white px-6 py-2.5 rounded-xl font-medium flex items-center gap-2 hover:bg-emerald-800 transition-colors"
-              >
-                <Plus size={20} />
-                <span>Novo Equipamento</span>
-              </button>
-            </>
-          )}
-        </div>
+
+        {profile?.role === 'admin' && (
+          <button
+            onClick={() => handleOpenModal()}
+            className="bg-emerald-700 text-white px-6 py-2.5 rounded-xl font-medium flex items-center gap-2 hover:bg-emerald-800 transition-colors"
+          >
+            <Plus size={20} />
+            <span>Novo Equipamento</span>
+          </button>
+        )}
       </div>
 
       <div className="relative mb-6">
@@ -213,7 +188,7 @@ export default function Equipments() {
 
       {loading ? (
         <div className="flex justify-center py-12">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-700"></div>
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-700" />
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -223,73 +198,84 @@ export default function Equipments() {
             const isSoon = eqSchedule && eqSchedule.daysRemaining >= 0 && eqSchedule.daysRemaining <= 7;
 
             return (
-              <div 
+              <div
                 key={equipment.id}
-                className="bg-white p-6 rounded-2xl border border-stone-200 hover:border-emerald-200 hover:shadow-lg transition-all group"
+                className="bg-white p-6 rounded-2xl border border-stone-200 hover:border-emerald-200 hover:shadow-lg transition-all"
               >
                 <div className="flex justify-between items-start mb-4">
                   <div className="bg-emerald-50 p-3 rounded-xl text-emerald-700">
                     <Settings size={24} />
                   </div>
+
                   {profile?.role === 'admin' && (
-                    <div className="flex gap-2">
-                      <button 
+                    <div className="flex gap-1">
+                      <button
                         onClick={() => handleOpenModal(equipment)}
-                        className="text-stone-400 hover:text-emerald-600 p-1"
+                        title="Editar equipamento"
+                        className="text-stone-400 hover:text-emerald-600 p-2 rounded-lg hover:bg-emerald-50 transition-colors"
                       >
-                        <ChevronRight size={20} />
+                        <Pencil size={16} />
                       </button>
-                      <button 
-                        onClick={() => handleDelete(equipment.id)}
-                        className="text-stone-400 hover:text-red-600 p-1"
+                      <button
+                        onClick={() => handleDelete(equipment.id, equipment.name)}
+                        title="Excluir equipamento"
+                        className="text-stone-400 hover:text-red-600 p-2 rounded-lg hover:bg-red-50 transition-colors"
                       >
-                        <Trash2 size={18} />
+                        <Trash2 size={16} />
                       </button>
                     </div>
                   )}
                 </div>
-                
+
                 <h3 className="font-bold text-lg text-stone-900 mb-1">{equipment.name}</h3>
-                <p className="text-stone-500 text-sm mb-2">S/N: {equipment.serial_number || 'N/A'}</p>
-                
+                <p className="text-stone-500 text-sm mb-1">
+                  {equipment.model && <span>{equipment.model} · </span>}
+                  S/N: {equipment.serial_number || 'N/A'}
+                </p>
+
                 {eqSchedule && (
-                  <div className="mb-4">
-                    <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider mb-1">
-                      <Clock size={12} className={isOverdue ? 'text-red-600' : isSoon ? 'text-amber-600' : 'text-emerald-600'} />
+                  <div className="mt-3 mb-4">
+                    <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider mb-1">
+                      <Clock
+                        size={11}
+                        className={isOverdue ? 'text-red-600' : isSoon ? 'text-amber-600' : 'text-emerald-600'}
+                      />
                       <span className={isOverdue ? 'text-red-600' : isSoon ? 'text-amber-600' : 'text-emerald-600'}>
                         Próxima Revisão
                       </span>
                     </div>
                     <p className={`text-sm font-bold ${isOverdue ? 'text-red-600' : 'text-stone-900'}`}>
-                      {format(eqSchedule.nextDate, "dd/MM/yyyy")}
-                      <span className="text-xs font-normal text-stone-500 ml-2">
-                        ({isOverdue ? `${Math.abs(eqSchedule.daysRemaining)}d atraso` : `${eqSchedule.daysRemaining}d restantes`})
+                      {format(eqSchedule.nextDate, 'dd/MM/yyyy')}
+                      <span className="text-xs font-normal text-stone-400 ml-2">
+                        {isOverdue
+                          ? `(${Math.abs(eqSchedule.daysRemaining)}d atraso)`
+                          : `(${eqSchedule.daysRemaining}d restantes)`}
                       </span>
                     </p>
                   </div>
                 )}
 
-                <div className="flex items-center gap-4 pt-4 border-t border-stone-50">
+                <div className="flex items-center gap-4 pt-4 border-t border-stone-100">
                   {equipment.manual_url ? (
-                    <a 
-                      href={equipment.manual_url} 
-                      target="_blank" 
+                    <a
+                      href={equipment.manual_url}
+                      target="_blank"
                       rel="noopener noreferrer"
-                      className="flex items-center gap-2 text-emerald-700 font-medium text-sm hover:underline"
+                      className="flex items-center gap-1.5 text-emerald-700 font-medium text-sm hover:underline"
                     >
-                      <FileText size={16} />
+                      <FileText size={15} />
                       Ver Manual
                     </a>
                   ) : (
                     <span className="text-stone-400 text-sm italic">Sem manual</span>
                   )}
-                  
+
                   {profile?.role === 'admin' && (
-                    <button 
+                    <button
                       onClick={() => setChecklistEquipmentId(equipment.id)}
-                      className="flex items-center gap-2 text-stone-600 font-medium text-sm hover:text-emerald-700 transition-colors"
+                      className="flex items-center gap-1.5 text-stone-500 font-medium text-sm hover:text-emerald-700 transition-colors ml-auto"
                     >
-                      <ClipboardCheck size={16} />
+                      <ClipboardCheck size={15} />
                       Checklist
                     </button>
                   )}
@@ -298,9 +284,18 @@ export default function Equipments() {
             );
           })}
 
-          {filteredEquipments.length === 0 && (
+          {filteredEquipments.length === 0 && !loading && (
             <div className="col-span-full text-center py-12 bg-white rounded-2xl border border-dashed border-stone-300">
-              <p className="text-stone-500">Nenhum equipamento encontrado.</p>
+              <Settings size={40} className="mx-auto text-stone-200 mb-3" />
+              <p className="text-stone-500 font-medium">Nenhum equipamento encontrado.</p>
+              {profile?.role === 'admin' && !searchTerm && (
+                <button
+                  onClick={() => handleOpenModal()}
+                  className="mt-3 text-emerald-700 text-sm font-medium hover:underline"
+                >
+                  Cadastrar primeiro equipamento
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -308,7 +303,7 @@ export default function Equipments() {
 
       {/* Gerenciador de Checklist */}
       {checklistEquipmentId && (
-        <ChecklistManager 
+        <ChecklistManager
           equipmentId={checklistEquipmentId}
           onClose={() => setChecklistEquipmentId(null)}
         />
@@ -322,81 +317,104 @@ export default function Equipments() {
               <h2 className="text-xl font-bold text-stone-900">
                 {editingEquipment ? 'Editar Equipamento' : 'Novo Equipamento'}
               </h2>
-              <button onClick={() => setIsModalOpen(false)} className="text-stone-400 hover:text-stone-600">
-                <X size={24} />
+              <button
+                onClick={() => setIsModalOpen(false)}
+                className="text-stone-400 hover:text-stone-600 p-1 rounded-lg hover:bg-stone-100 transition-colors"
+              >
+                <X size={22} />
               </button>
             </div>
-            
+
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="col-span-2">
-                  <label className="block text-sm font-medium text-stone-700 mb-1">Nome do Equipamento</label>
-                  <input 
+                  <label className="block text-sm font-medium text-stone-700 mb-1">
+                    Nome do Equipamento *
+                  </label>
+                  <input
                     required
                     value={formData.name}
-                    onChange={e => setFormData({...formData, name: e.target.value})}
+                    onChange={e => setFormData({ ...formData, name: e.target.value })}
                     className="w-full px-4 py-2 border border-stone-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"
                   />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-stone-700 mb-1">Modelo</label>
-                  <input 
+                  <input
                     value={formData.model}
-                    onChange={e => setFormData({...formData, model: e.target.value})}
+                    onChange={e => setFormData({ ...formData, model: e.target.value })}
                     className="w-full px-4 py-2 border border-stone-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"
                   />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-stone-700 mb-1">Nº de Série</label>
-                  <input 
+                  <input
                     value={formData.serial_number}
-                    onChange={e => setFormData({...formData, serial_number: e.target.value})}
+                    onChange={e => setFormData({ ...formData, serial_number: e.target.value })}
                     className="w-full px-4 py-2 border border-stone-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"
                   />
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-stone-700 mb-1">Intervalo Prev. (dias)</label>
-                  <input 
+                <div className="col-span-2">
+                  <label className="block text-sm font-medium text-stone-700 mb-1">
+                    Intervalo Preventivo (dias) *
+                  </label>
+                  <input
                     type="number"
                     required
+                    min={1}
                     value={formData.preventive_interval_days}
-                    onChange={e => setFormData({...formData, preventive_interval_days: parseInt(e.target.value)})}
+                    onChange={e => setFormData({ ...formData, preventive_interval_days: parseInt(e.target.value) })}
                     className="w-full px-4 py-2 border border-stone-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"
                   />
                 </div>
                 <div className="col-span-2">
                   <label className="block text-sm font-medium text-stone-700 mb-1">Manual (PDF)</label>
                   <div className="flex items-center gap-3">
-                    <label className="flex-1 flex items-center justify-center gap-2 px-4 py-2 border-2 border-dashed border-stone-200 rounded-xl cursor-pointer hover:border-emerald-500 hover:bg-emerald-50 transition-all">
-                      {uploading ? <Loader2 className="animate-spin" size={20} /> : <Upload size={20} />}
+                    <label className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 border-2 border-dashed border-stone-200 rounded-xl cursor-pointer hover:border-emerald-500 hover:bg-emerald-50 transition-all">
+                      {uploading
+                        ? <Loader2 className="animate-spin text-stone-400" size={18} />
+                        : <Upload size={18} className="text-stone-400" />
+                      }
                       <span className="text-sm font-medium text-stone-600">
-                        {formData.manual_url ? 'Alterar Manual' : 'Carregar PDF'}
+                        {formData.manual_url ? 'Substituir PDF' : 'Carregar PDF'}
                       </span>
-                      <input type="file" accept=".pdf" className="hidden" onChange={handleFileUpload} disabled={uploading} />
+                      <input
+                        type="file"
+                        accept=".pdf"
+                        className="hidden"
+                        onChange={handleFileUpload}
+                        disabled={uploading}
+                      />
                     </label>
                     {formData.manual_url && (
-                      <div className="text-emerald-600">
-                        <FileText size={24} />
-                      </div>
+                      <a
+                        href={formData.manual_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-emerald-600 hover:text-emerald-800 transition-colors"
+                        title="Visualizar manual atual"
+                      >
+                        <FileText size={22} />
+                      </a>
                     )}
                   </div>
                 </div>
               </div>
 
-              <div className="flex gap-3 mt-8">
-                <button 
-                  type="button" 
+              <div className="flex gap-3 mt-6">
+                <button
+                  type="button"
                   onClick={() => setIsModalOpen(false)}
                   className="flex-1 py-3 border border-stone-200 rounded-xl font-medium text-stone-600 hover:bg-stone-50 transition-colors"
                 >
                   Cancelar
                 </button>
-                <button 
-                  type="submit" 
+                <button
+                  type="submit"
                   disabled={uploading}
                   className="flex-1 py-3 bg-emerald-700 text-white rounded-xl font-medium hover:bg-emerald-800 transition-colors shadow-sm disabled:opacity-50"
                 >
-                  {editingEquipment ? 'Salvar Alterações' : 'Cadastrar Equipamento'}
+                  {editingEquipment ? 'Salvar Alterações' : 'Cadastrar'}
                 </button>
               </div>
             </form>
