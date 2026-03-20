@@ -4,12 +4,16 @@ import { useAuth } from './useAuth';
 import { Notification } from '../types';
 
 export function useNotifications() {
-  const { user } = useAuth();
+  const { user, isReady } = useAuth();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!user) return;
+    // Não buscar antes da sessão estar pronta
+    if (!isReady || !user) {
+      setLoading(false);
+      return;
+    }
 
     fetchNotifications();
 
@@ -17,12 +21,7 @@ export function useNotifications() {
       .channel(`notifications-${user.id}`)
       .on(
         'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'notifications',
-          filter: `user_id=eq.${user.id}`
-        },
+        { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${user.id}` },
         (payload) => {
           if (payload.eventType === 'INSERT') {
             setNotifications(prev => [payload.new as Notification, ...prev]);
@@ -35,10 +34,8 @@ export function useNotifications() {
       )
       .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [user]);
+    return () => { supabase.removeChannel(channel); };
+  }, [user, isReady]);
 
   async function fetchNotifications() {
     if (!user) return;
@@ -61,12 +58,7 @@ export function useNotifications() {
 
   async function markAsRead(id: string) {
     try {
-      const { error } = await supabase
-        .from('notifications')
-        .update({ read: true })
-        .eq('id', id);
-
-      if (error) throw error;
+      await supabase.from('notifications').update({ read: true }).eq('id', id);
       setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
     } catch (error) {
       console.error('Error marking notification as read:', error);
@@ -76,25 +68,17 @@ export function useNotifications() {
   async function markAllAsRead() {
     if (!user) return;
     try {
-      const { error } = await supabase
-        .from('notifications')
-        .update({ read: true })
-        .eq('user_id', user.id)
-        .eq('read', false);
-
-      if (error) throw error;
+      await supabase.from('notifications').update({ read: true }).eq('user_id', user.id).eq('read', false);
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
     } catch (error) {
       console.error('Error marking all notifications as read:', error);
     }
   }
 
-  const unreadCount = notifications.filter(n => !n.read).length;
-
   return {
     notifications,
     loading,
-    unreadCount,
+    unreadCount: notifications.filter(n => !n.read).length,
     markAsRead,
     markAllAsRead,
     refresh: fetchNotifications
