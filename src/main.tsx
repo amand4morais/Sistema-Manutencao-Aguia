@@ -7,11 +7,10 @@ import './index.css';
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime:            1000 * 60 * 5,         // 5 min — não rebusca se dado recente
-      gcTime:               1000 * 60 * 60 * 24,   // 24h na memória enquanto a aba estiver aberta
-      retry:                1,
+      staleTime:            1000 * 60 * 10,
+      gcTime:               1000 * 60 * 60 * 24,
+      retry:                2,
       refetchOnWindowFocus: false,
-      // Usa cache existente mesmo offline, sem tentar o servidor
       networkMode:          'offlineFirst',
     },
     mutations: {
@@ -28,7 +27,6 @@ createRoot(document.getElementById('root')!).render(
   </StrictMode>,
 );
 
-// Service Worker — cache de assets e dados Supabase
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js')
