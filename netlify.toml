@@ -2,6 +2,12 @@
   command = "npm run build"
   publish = "dist"
 
+# Desabilitar secrets scanning para chaves públicas do Supabase.
+# VITE_SUPABASE_ANON_KEY é uma chave pública por design — protegida por RLS,
+# não por sigilo. VITE_SUPABASE_URL é apenas a URL do projeto Supabase.
+[build.environment]
+  SECRETS_SCAN_OMIT_KEYS = "VITE_SUPABASE_ANON_KEY,VITE_SUPABASE_URL,GEMINI_API_KEY,APP_URL"
+
 [[redirects]]
   from   = "/*"
   to     = "/index.html"
