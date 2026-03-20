@@ -44,7 +44,7 @@ export default function Employees() {
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
-        .order('full_name');
+        .order('created_at', { ascending: true }); // ASC para o primeiro ser o Master
 
       if (error) throw error;
       setEmployees(data || []);
@@ -54,6 +54,12 @@ export default function Employees() {
       setLoading(false);
     }
   }
+
+  // Admin Master = primeiro admin cadastrado (created_at mais antigo)
+  // Mesma lógica usada na política RLS do banco
+  const adminMasterId = employees
+    .filter(e => e.role === 'admin')
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())[0]?.id;
 
   const onSubmit = async (data: EmployeeForm) => {
     setLoading(true);
@@ -108,47 +114,49 @@ export default function Employees() {
   };
 
   const handleDelete = async (employee: Profile) => {
-    // Proteção: não permite excluir o próprio usuário logado
+    // Proteção frontend 1: não pode excluir a si mesmo
     if (employee.id === currentProfile?.id) {
       toast.error('Você não pode excluir sua própria conta.');
       return;
     }
 
-    // Proteção: o primeiro admin registrado (mais antigo) não pode ser excluído
-    const admins = employees
-      .filter(e => e.role === 'admin')
-      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-
-    const isAdminMaster = admins.length > 0 && admins[0].id === employee.id;
-    if (isAdminMaster) {
+    // Proteção frontend 2: Admin Master não pode ser excluído
+    if (employee.id === adminMasterId) {
       toast.error('O Administrador Master não pode ser excluído.');
       return;
     }
 
-    if (!confirm(`Excluir o funcionário "${employee.full_name}"? Esta ação não pode ser desfeita.`)) {
+    if (!confirm(`Excluir o funcionário "${employee.full_name}"?\nEsta ação não pode ser desfeita.`)) {
       return;
     }
 
     try {
-      // Excluir perfil (o cascade no auth.users é gerenciado pelo Supabase via trigger)
       const { error } = await supabase
         .from('profiles')
         .delete()
         .eq('id', employee.id);
 
-      if (error) throw error;
+      if (error) {
+        // Proteção backend: RLS bloqueou — tratar com mensagem clara
+        if (
+          error.code === '42501' ||
+          error.code === 'PGRST301' ||
+          error.message?.includes('row-level security') ||
+          error.message?.includes('permission')
+        ) {
+          toast.error('Operação negada pelo servidor. Verifique suas permissões.');
+          return;
+        }
+        throw error;
+      }
 
-      toast.success(`Funcionário "${employee.full_name}" removido.`);
+      toast.success(`Funcionário "${employee.full_name}" removido com sucesso.`);
       fetchEmployees();
     } catch (error: any) {
-      toast.error('Erro ao excluir funcionário: ' + (error.message || 'Erro desconhecido'));
+      console.error('Erro ao excluir funcionário:', error);
+      toast.error('Erro ao excluir: ' + (error.message || 'Erro desconhecido'));
     }
   };
-
-  // Determina o admin mais antigo para exibir badge "Master"
-  const adminMasterId = employees
-    .filter(e => e.role === 'admin')
-    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())[0]?.id;
 
   const filteredEmployees = employees.filter(e =>
     e.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -208,8 +216,8 @@ export default function Employees() {
                 </tr>
               ) : (
                 filteredEmployees.map((employee) => {
-                  const isSelf = employee.id === currentProfile?.id;
-                  const isMaster = employee.id === adminMasterId;
+                  const isSelf    = employee.id === currentProfile?.id;
+                  const isMaster  = employee.id === adminMasterId;
                   const canDelete = !isSelf && !isMaster;
 
                   return (
@@ -232,7 +240,9 @@ export default function Employees() {
                         </div>
                       </td>
 
-                      <td className="px-6 py-4 text-stone-500 text-sm">{employee.cpf}</td>
+                      <td className="px-6 py-4 text-stone-500 text-sm font-mono">
+                        {employee.cpf}
+                      </td>
 
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-2 flex-wrap">
@@ -272,14 +282,18 @@ export default function Employees() {
                           <button
                             onClick={() => handleDelete(employee)}
                             title={`Excluir ${employee.full_name}`}
-                            className="text-stone-300 hover:text-red-600 transition-colors p-1 rounded-lg hover:bg-red-50"
+                            className="text-stone-300 hover:text-red-600 transition-colors p-1.5 rounded-lg hover:bg-red-50"
                           >
                             <Trash2 size={17} />
                           </button>
                         ) : (
                           <span
-                            title={isMaster ? 'Admin Master não pode ser excluído' : 'Não é possível excluir sua própria conta'}
-                            className="text-stone-200 p-1 inline-block cursor-not-allowed"
+                            title={
+                              isMaster
+                                ? 'Admin Master não pode ser excluído'
+                                : 'Não é possível excluir sua própria conta'
+                            }
+                            className="text-stone-200 p-1.5 inline-block cursor-not-allowed"
                           >
                             <Trash2 size={17} />
                           </span>
@@ -361,8 +375,8 @@ export default function Employees() {
               </div>
 
               <p className="text-xs text-stone-400 bg-stone-50 rounded-xl p-3 leading-relaxed">
-                A senha inicial será <strong className="text-stone-600 font-mono">af</strong> seguida dos primeiros 4 dígitos do CPF.
-                O funcionário deverá alterá-la no primeiro acesso.
+                A senha inicial será <strong className="text-stone-600 font-mono">af</strong> seguida
+                dos primeiros 4 dígitos do CPF. O funcionário deverá alterá-la no primeiro acesso.
               </p>
 
               <div className="flex gap-3 mt-6">

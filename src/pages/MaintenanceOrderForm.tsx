@@ -14,7 +14,7 @@ export default function MaintenanceOrderForm() {
   const navigate = useNavigate();
   const location = useLocation();
   const { profile } = useAuth();
-  const { addAction } = useOfflineSync();
+  const { addAction, isOnline } = useOfflineSync();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -39,7 +39,7 @@ export default function MaintenanceOrderForm() {
     services_performed: '',
     observations: '',
     status: 'open',
-    technician_id: profile?.id || ''
+    technician_id: ''   // intencional: OS pode ser aberta sem responsável definido
   });
 
   useEffect(() => {
@@ -50,21 +50,15 @@ export default function MaintenanceOrderForm() {
     try {
       setLoading(true);
 
-      // Buscar equipamentos
-      const { data: eqData, error: eqError } = await supabase
+      const { data: eqData } = await supabase
         .from('equipments')
         .select('*')
         .order('name');
-
-      if (eqError) {
-        console.error('Erro ao carregar equipamentos:', eqError);
-      }
       setEquipments(eqData || []);
 
       const isEditing = id && id !== 'new';
 
       if (isEditing) {
-        // Carregar OS existente — sem join para evitar falha de FK
         const { data: orderData, error: orderError } = await supabase
           .from('maintenance_orders')
           .select('*')
@@ -81,31 +75,21 @@ export default function MaintenanceOrderForm() {
         }
 
         if (orderData) {
-          // time_entries pode vir como string JSON dependendo do tipo da coluna
           const timeEntries = typeof orderData.time_entries === 'string'
             ? JSON.parse(orderData.time_entries)
             : (orderData.time_entries || []);
-
           setFormData({ ...orderData, time_entries: timeEntries });
         }
       } else {
-        // Nova OS — pré-preencher a partir dos query params
-        const params = new URLSearchParams(location.search);
-        const equipmentId = params.get('equipment_id');
-        const correctiveId = params.get('corrective_id');
-        const problem = params.get('problem');
-        const observations = params.get('observations');
-
+        // Nova OS — pré-preencher apenas com dados do usuário logado
+        // Não recebe mais equipment_id nem corrective_id via query params
+        // pois agora a OS é o ponto de ENTRADA, não de saída
         setFormData(prev => ({
           ...prev,
           number: Math.floor(10000 + Math.random() * 90000).toString(),
           requester_name: profile?.full_name || '',
-          equipment_id: equipmentId || '',
-          corrective_id: correctiveId || null,
-          problem_description: problem || '',
-          observations: observations || '',
           service_by: profile?.full_name || '',
-          technician_id: profile?.id || ''
+          technician_id: ''  // sem responsável definido na abertura
         }));
       }
     } catch (error: any) {
@@ -147,37 +131,84 @@ export default function MaintenanceOrderForm() {
       return;
     }
 
+    if (!formData.problem_description?.trim()) {
+      toast.error('Descreva o problema');
+      return;
+    }
+
     setSaving(true);
     try {
-      const payload = {
-        ...formData,
-        technician_id: profile?.id || formData.technician_id,
-        updated_at: new Date().toISOString()
-      };
-
       const isEditing = id && id !== 'new';
 
       if (isEditing) {
-        await addAction('maintenance_orders', 'UPDATE', { ...payload, id });
+        // Edição: apenas atualiza a OS
+        await addAction('maintenance_orders', 'UPDATE', {
+          ...formData,
+          id,
+          updated_at: new Date().toISOString()
+        });
         toast.success('Ordem de Serviço atualizada!');
-      } else {
-        await addAction('maintenance_orders', 'INSERT', payload);
-
-        const equipment = equipments.find(eq => eq.id === formData.equipment_id);
-        await notifyAdmins(
-          'Nova Ordem de Serviço',
-          `OS #${formData.number} criada para o equipamento ${equipment?.name || 'desconhecido'}.`,
-          'info',
-          '/maintenance-orders'
-        );
-
-        toast.success('Ordem de Serviço criada!');
+        navigate('/maintenance-orders');
+        return;
       }
 
+      // -------------------------------------------------------
+      // NOVA OS: criar a OS e em seguida criar a corretiva vinculada
+      // -------------------------------------------------------
+
+      // 1. Montar payload da OS (sem corrective_id ainda)
+      const osPayload = {
+        ...formData,
+        technician_id: formData.technician_id || null,
+        updated_at: new Date().toISOString()
+      };
+
+      // 2. Inserir a OS diretamente para obter o ID gerado
+      const { data: osData, error: osError } = await supabase
+        .from('maintenance_orders')
+        .insert(osPayload)
+        .select('id')
+        .single();
+
+      if (osError) throw osError;
+
+      const osId = osData.id;
+
+      // 3. Criar a manutenção corretiva vinculada à OS
+      const { data: corrData, error: corrError } = await supabase
+        .from('corrective_maintenances')
+        .insert({
+          equipment_id: formData.equipment_id,
+          problem_description: formData.problem_description,
+          status: 'pending',
+          responsible_id: null,  // sem responsável — qualquer manutentor pode pegar
+          version: 1
+        })
+        .select('id')
+        .single();
+
+      if (corrError) throw corrError;
+
+      // 4. Atualizar a OS com o corrective_id gerado
+      await supabase
+        .from('maintenance_orders')
+        .update({ corrective_id: corrData.id })
+        .eq('id', osId);
+
+      // 5. Notificar admins
+      const equipment = equipments.find(eq => eq.id === formData.equipment_id);
+      await notifyAdmins(
+        'Nova Ordem de Serviço',
+        `OS #${formData.number} aberta para ${equipment?.name || 'equipamento'}. Problema: ${formData.problem_description}`,
+        'warning',
+        '/maintenance-orders'
+      );
+
+      toast.success('OS criada! Manutenção corretiva gerada e disponível para os técnicos.');
       navigate('/maintenance-orders');
     } catch (error: any) {
       console.error('Erro ao salvar OS:', error);
-      toast.error('Erro ao salvar Ordem de Serviço: ' + (error.message || 'Erro desconhecido'));
+      toast.error('Erro ao salvar: ' + (error.message || 'Erro desconhecido'));
     } finally {
       setSaving(false);
     }
@@ -190,6 +221,8 @@ export default function MaintenanceOrderForm() {
       </div>
     );
   }
+
+  const isEditing = id && id !== 'new';
 
   return (
     <div className="p-4 md:p-8 max-w-5xl mx-auto print:p-0">
@@ -225,6 +258,15 @@ export default function MaintenanceOrderForm() {
           </button>
         </div>
       </div>
+
+      {/* Aviso informativo para nova OS */}
+      {!isEditing && (
+        <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-2xl text-sm text-amber-800 print:hidden">
+          <strong>Abertura de OS:</strong> ao salvar, uma manutenção corretiva será criada automaticamente
+          e ficará disponível para os técnicos na tela de Manutenções.
+          O responsável pela execução não precisa ser definido agora.
+        </div>
+      )}
 
       {/* Formulário */}
       <div className="bg-white border border-stone-300 shadow-sm overflow-hidden print:border-none print:shadow-none">
@@ -270,7 +312,7 @@ export default function MaintenanceOrderForm() {
                 type="text"
                 value={formData.requester_name}
                 onChange={e => setFormData({ ...formData, requester_name: e.target.value })}
-                placeholder="Nome do solicitante"
+                placeholder="Nome de quem está abrindo a OS"
                 className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium placeholder:text-stone-300"
               />
             </div>
@@ -342,12 +384,13 @@ export default function MaintenanceOrderForm() {
 
           {/* Problema */}
           <div className="p-4 border-b border-stone-300">
-            <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">Problema</label>
+            <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">Problema *</label>
             <textarea
-              rows={2}
+              required
+              rows={3}
               value={formData.problem_description}
               onChange={e => setFormData({ ...formData, problem_description: e.target.value })}
-              placeholder="Descreva o problema identificado"
+              placeholder="Descreva o problema identificado — será usado para criar a manutenção corretiva"
               className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium placeholder:text-stone-300 resize-none"
             />
           </div>
@@ -387,12 +430,15 @@ export default function MaintenanceOrderForm() {
               </div>
             </div>
             <div className="p-4">
-              <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">Atendimento por</label>
+              <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">
+                Atendimento por
+                <span className="text-stone-400 font-normal normal-case ml-1">(pode ser definido depois)</span>
+              </label>
               <input
                 type="text"
                 value={formData.service_by}
                 onChange={e => setFormData({ ...formData, service_by: e.target.value })}
-                placeholder="Nome do técnico/atendente"
+                placeholder="Nome do técnico responsável"
                 className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium placeholder:text-stone-300"
               />
             </div>
@@ -414,43 +460,28 @@ export default function MaintenanceOrderForm() {
                 {(formData.time_entries || []).map((entry, idx) => (
                   <tr key={idx} className="border-b border-stone-200 last:border-0">
                     <td className="p-0 border-r border-stone-300">
-                      <input
-                        type="date"
-                        value={entry.date}
+                      <input type="date" value={entry.date}
                         onChange={e => handleTimeEntryChange(idx, 'date', e.target.value)}
-                        className="w-full bg-transparent border-none p-2 focus:ring-0 text-xs font-medium"
-                      />
+                        className="w-full bg-transparent border-none p-2 focus:ring-0 text-xs font-medium" />
                     </td>
                     <td className="p-0 border-r border-stone-300">
-                      <input
-                        type="text"
-                        value={entry.morning}
+                      <input type="text" value={entry.morning}
                         onChange={e => handleTimeEntryChange(idx, 'morning', e.target.value)}
-                        className="w-full bg-transparent border-none p-2 focus:ring-0 text-xs text-center font-medium"
-                      />
+                        className="w-full bg-transparent border-none p-2 focus:ring-0 text-xs text-center font-medium" />
                     </td>
                     <td className="p-0 border-r border-stone-300">
-                      <input
-                        type="text"
-                        value={entry.afternoon}
+                      <input type="text" value={entry.afternoon}
                         onChange={e => handleTimeEntryChange(idx, 'afternoon', e.target.value)}
-                        className="w-full bg-transparent border-none p-2 focus:ring-0 text-xs text-center font-medium"
-                      />
+                        className="w-full bg-transparent border-none p-2 focus:ring-0 text-xs text-center font-medium" />
                     </td>
                     <td className="p-0 border-r border-stone-300">
-                      <input
-                        type="text"
-                        value={entry.night}
+                      <input type="text" value={entry.night}
                         onChange={e => handleTimeEntryChange(idx, 'night', e.target.value)}
-                        className="w-full bg-transparent border-none p-2 focus:ring-0 text-xs text-center font-medium"
-                      />
+                        className="w-full bg-transparent border-none p-2 focus:ring-0 text-xs text-center font-medium" />
                     </td>
                     <td className="p-2 text-center print:hidden">
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveTimeEntry(idx)}
-                        className="text-stone-300 hover:text-red-500 transition-colors"
-                      >
+                      <button type="button" onClick={() => handleRemoveTimeEntry(idx)}
+                        className="text-stone-300 hover:text-red-500 transition-colors">
                         <Trash2 size={14} />
                       </button>
                     </td>
@@ -459,13 +490,9 @@ export default function MaintenanceOrderForm() {
               </tbody>
             </table>
             <div className="p-2 bg-stone-50/50 flex justify-center print:hidden">
-              <button
-                type="button"
-                onClick={handleAddTimeEntry}
-                className="text-xs font-bold text-emerald-700 flex items-center gap-1 hover:text-emerald-800"
-              >
-                <Plus size={14} />
-                Adicionar Linha
+              <button type="button" onClick={handleAddTimeEntry}
+                className="text-xs font-bold text-emerald-700 flex items-center gap-1 hover:text-emerald-800">
+                <Plus size={14} /> Adicionar Linha
               </button>
             </div>
           </div>
@@ -473,25 +500,19 @@ export default function MaintenanceOrderForm() {
           {/* Serviços executados */}
           <div className="p-4 border-b border-stone-300">
             <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">Serviços Executados</label>
-            <textarea
-              rows={8}
-              value={formData.services_performed}
+            <textarea rows={8} value={formData.services_performed}
               onChange={e => setFormData({ ...formData, services_performed: e.target.value })}
-              placeholder="Descreva detalhadamente todos os serviços realizados"
-              className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium placeholder:text-stone-300 resize-none leading-relaxed"
-            />
+              placeholder="Preenchido pelo técnico durante ou após a execução"
+              className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium placeholder:text-stone-300 resize-none leading-relaxed" />
           </div>
 
           {/* Observações */}
           <div className="p-4 border-b border-stone-300">
             <label className="block text-[10px] font-bold text-emerald-800 uppercase mb-1">Observações</label>
-            <textarea
-              rows={3}
-              value={formData.observations}
+            <textarea rows={3} value={formData.observations}
               onChange={e => setFormData({ ...formData, observations: e.target.value })}
               placeholder="Observações adicionais"
-              className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium placeholder:text-stone-300 resize-none"
-            />
+              className="w-full bg-transparent border-none p-0 focus:ring-0 text-sm font-medium placeholder:text-stone-300 resize-none" />
           </div>
 
           {/* Assinatura */}
@@ -514,16 +535,13 @@ export default function MaintenanceOrderForm() {
           <span className="text-sm font-medium text-stone-700">Finalizar Ordem de Serviço</span>
         </label>
 
-        <button
-          onClick={handleSubmit}
-          disabled={saving}
-          className="bg-emerald-700 text-white px-8 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-emerald-800 transition-colors shadow-lg disabled:opacity-50"
-        >
+        <button onClick={handleSubmit} disabled={saving}
+          className="bg-emerald-700 text-white px-8 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-emerald-800 transition-colors shadow-lg disabled:opacity-50">
           {saving
             ? <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white" />
             : <CheckCircle2 size={20} />
           }
-          <span>{id && id !== 'new' ? 'Salvar Alterações' : 'Criar Ordem de Serviço'}</span>
+          <span>{isEditing ? 'Salvar Alterações' : 'Criar Ordem de Serviço'}</span>
         </button>
       </div>
     </div>
